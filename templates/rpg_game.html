@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Echoes of the Hollow Realm</title>
+  <style>
+    body {
+      background: #1b1b1b;
+      color: #f0f0f0;
+      font-family: 'Segoe UI', sans-serif;
+      padding: 20px;
+    }
+    .box {
+      background-color: #282828;
+      padding: 20px;
+      border-radius: 12px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+    }
+    h1, h2, h3 {
+      color: #90cdf4;
+    }
+    button {
+      background-color: #38a169;
+      color: white;
+      border: none;
+      padding: 10px 16px;
+      border-radius: 6px;
+      margin: 5px 0;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #2f855a;
+    }
+    .choice-button {
+      display: block;
+      background-color: #333;
+      border: 1px solid #444;
+      padding: 10px;
+      margin: 6px 0;
+      border-radius: 6px;
+      width: 100%;
+      text-align: left;
+    }
+    .success { color: #48bb78; }
+    .fail { color: #f56565; }
+    .info {
+      font-size: 0.9em;
+      color: #a0aec0;
+    }
+  </style>
+</head>
+<body>
+  <h1>🌌 Echoes of the Hollow Realm</h1>
+  <div id="start" class="box">
+    <label>Enter your name:</label><br>
+    <input id="player_name">
+    <button onclick="startGame()">Start Game</button>
+  </div>
+
+  <div id="game" style="display:none;">
+    <div class="box">
+      <h2>Story</h2>
+      <p id="story"></p>
+      <p id="result-info"></p>
+    </div>
+
+    <div class="box">
+      <h3>What will you do?</h3>
+      <div id="choices"></div>
+    </div>
+
+    <div class="box">
+      <h3>Stats</h3>
+      <ul id="stats"></ul>
+    </div>
+
+    <div class="box">
+      <h3>Inventory</h3>
+      <ul id="inventory"></ul>
+    </div>
+  </div>
+
+  <script>
+    async function startGame() {
+      const playerName = document.getElementById("player_name").value;
+      const res = await fetch("/start_game", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ player_name: playerName })
+      });
+      const data = await res.json();
+      document.getElementById("start").style.display = "none";
+      document.getElementById("game").style.display = "block";
+      updateUI(data.event, data.stats, data.inventory);
+      getChoices();
+    }
+
+    async function sendAction(actionText) {
+      const res = await fetch("/respond_to_event", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ action: actionText })
+      });
+      const data = await res.json();
+      updateUI(data.outcome, data.stats, data.inventory, data);
+      getChoices();
+    }
+
+    async function getChoices() {
+      const res = await fetch("/get_choices", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"}
+      });
+      const data = await res.json();
+      const choicesDiv = document.getElementById("choices");
+      choicesDiv.innerHTML = "";
+      data.choices.forEach(choice => {
+        const btn = document.createElement("button");
+        btn.className = "choice-button";
+        btn.innerHTML = `
+          <strong>${choice.action}</strong><br>
+          <span class="info">Stat: ${choice.stat} | Chance: ${choice.chance}% | Reward: ${choice.reward}</span>
+        `;
+        btn.onclick = () => sendAction(choice.action);
+        choicesDiv.appendChild(btn);
+      });
+    }
+
+    function updateUI(story, stats, inventory, result = null) {
+      document.getElementById("story").innerText = story;
+      const statList = document.getElementById("stats");
+      statList.innerHTML = "";
+      for (const key in stats) {
+        const li = document.createElement("li");
+        li.innerText = `${key}: ${stats[key]}`;
+        statList.appendChild(li);
+      }
+      const inventoryList = document.getElementById("inventory");
+      inventoryList.innerHTML = "";
+      inventory.forEach(item => {
+        const li = document.createElement("li");
+        li.innerText = item;
+        inventoryList.appendChild(li);
+      });
+      const resultInfo = document.getElementById("result-info");
+      if (result && result.triggered !== null) {
+        if (result.triggered) {
+          const outcomeText = result.success ? `✅ Success in ${result.stat_used} check!` : `❌ Failed ${result.stat_used} check. Lost 1 health.`;
+          resultInfo.innerHTML = `<strong>Result:</strong> <span class="${result.success ? 'success' : 'fail'}">${outcomeText}</span>`;
+        } else {
+          resultInfo.innerHTML = `<strong>No stat check</strong> this turn.`;
+        }
+      } else {
+        resultInfo.innerHTML = "";
+      }
+    }
+  </script>
+</body>
+</html>

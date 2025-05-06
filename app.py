@@ -1,142 +1,191 @@
 from flask import Flask, request, jsonify, render_template
 import os
-from dotenv import load_dotenv
-import requests
 import random
-import csv
-import html
-import re
-import time
+from dotenv import load_dotenv
+from groq import Groq
 
 load_dotenv()
 
 app = Flask(__name__)
+groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-def call_groq_chat(prompt, model="llama-3-70b-8192"):
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    data = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You are a game master for Cards Against Humanity."},
-            {"role": "user", "content": prompt}
-        ]
-    }
-
-    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
-
-def load_answers():
-    with open('answers.csv', newline='', encoding='utf-8') as csvfile:
-        reader = csv.DictReader(csvfile)
-        return [row['answer'] for row in reader]
-
-def load_questions():
-    with open('questions.csv', newline='', encoding='utf-8') as csvfile:
-        reader = csv.DictReader(csvfile)
-        return [row['question'] for row in reader]
-
-answers = load_answers()
-questions = load_questions()
-
-game_state = {}
+# Game state
+game_state = {
+    "player_name": "",
+    "location": "Twilight Clearing",
+    "inventory": ["Rusty Sword", "Old Map"],
+    "stats": {
+        "health": 10,
+        "courage": 3,
+        "wisdom": 2,
+        "charisma": 2,
+        "luck": 1
+    },
+    "history": [],
+    "current_event": "",
+    "round": 0
+}
 
 @app.route("/")
 def home():
-    return render_template("cards_game.html")
+    return render_template("rpg_game.html")
 
 @app.route("/start_game", methods=["POST"])
 def start_game():
     game_state["player_name"] = request.json["player_name"]
     game_state["round"] = 1
-    game_state["player_score"] = 0
-    game_state["bot_score"] = 0
-    game_state["player_cards"] = fetch_random_cards()
-    game_state["round_start_time"] = time.time()
-    question = get_random_question()
+    game_state["inventory"] = ["Rusty Sword", "Old Map"]
+    game_state["location"] = "Twilight Clearing"
+    game_state["stats"] = {
+        "health": 10,
+        "courage": 3,
+        "wisdom": 2,
+        "charisma": 2,
+        "luck": 1
+    }
+    game_state["history"] = []
+
+    intro_event = generate_story_event()
+    game_state["current_event"] = intro_event
+
     return jsonify({
-        "message": f"Jocul a început! Bun venit {game_state['player_name']}! Să începem cu runda {game_state['round']}.",
-        "question": question,
-        "cards": game_state["player_cards"]
+        "message": f"Welcome, {game_state['player_name']}! Your adventure begins in the {game_state['location']}.",
+        "event": intro_event,
+        "inventory": game_state["inventory"],
+        "stats": game_state["stats"]
     })
 
-@app.route("/next_round", methods=["POST"])
-def next_round():
+@app.route("/respond_to_event", methods=["POST"])
+def respond_to_event():
+    player_action = request.json["action"]
     game_state["round"] += 1
-    game_state["round_start_time"] = time.time()
-    question = get_random_question()
-    return jsonify({
-        "message": f"Runda {game_state['round']} a început! Alege un răspuns amuzant:",
-        "question": question,
-        "cards": game_state["player_cards"]
+
+    stat_used = detect_stat_from_action(player_action)
+    stat_value = game_state["stats"].get(stat_used, 0)
+    triggered = random.random() < 0.4  # 40% chance to trigger stat check
+    success = None
+    result_description = "none"
+
+    if triggered:
+        success_chance = stat_value / 10
+        success = random.random() < success_chance
+        result_description = "success" if success else "failure"
+
+        if not success:
+            game_state["stats"]["health"] = max(0, game_state["stats"]["health"] - 1)
+        else:
+            if stat_used and stat_used != "health":
+                game_state["stats"][stat_used] = game_state["stats"].get(stat_used, 0) + 1
+
+    game_state["history"].append({
+        "round": game_state["round"],
+        "action": player_action,
+        "event": game_state["current_event"],
+        "stat_used": stat_used,
+        "triggered": triggered,
+        "success": success
     })
 
-@app.route("/play_round", methods=["POST"])
-def play_round():
-    user_answers = request.json["answers"]
-    question = request.json["question"]
-    round_time_limit = 30
-    elapsed_time = time.time() - game_state.get("round_start_time", 0)
+    story_context = (
+        f"Scene: {game_state['current_event']}\n"
+        f"Player action: {player_action}\n"
+        f"Stat challenge: {stat_used} ({stat_value}) - {result_description}\n"
+        f"Player stats: {game_state['stats']}"
+    )
 
-    if elapsed_time > round_time_limit:
-        round_winner = "bot"
-        message = "Ai depășit timpul! Botul câștigă această rundă."
-    else:
-        round_winner = "player" if random.choice([True, False]) else "bot"
-        message = f"Răspunsul tău: {user_answers}\nRăspunsul botului: {get_random_answer()}\n{round_winner.capitalize()} câștigă această rundă!"
-
-    if round_winner == "player":
-        game_state["player_score"] += 1
-    else:
-        game_state["bot_score"] += 1
-
-    for answer in user_answers:
-        if answer in game_state["player_cards"]:
-            game_state["player_cards"].remove(answer)
-
-    new_cards_needed = 5 - len(game_state["player_cards"])
-    if new_cards_needed > 0:
-        new_cards = fetch_random_cards(count=new_cards_needed)
-        game_state["player_cards"].extend(new_cards)
-
-    game_state["round_start_time"] = time.time()
+    next_event = call_groq_for_result(story_context)
+    game_state["current_event"] = next_event
 
     return jsonify({
-        "message": message,
-        "score": f"Scor: {game_state['player_name']} - {game_state['player_score']} | Bot - {game_state['bot_score']}",
-        "question": get_random_question(),
-        "cards": game_state["player_cards"]
+        "outcome": next_event,
+        "inventory": game_state["inventory"],
+        "stats": game_state["stats"],
+        "stat_used": stat_used,
+        "success": success,
+        "triggered": triggered
     })
 
-def get_random_question():
-    return random.choice(questions)
-
-def get_random_answer():
-    return random.choice(answers)
-
-def fetch_random_cards(count=5):
-    selected_answers = random.sample(answers, min(count, len(answers)))
-    prompt = f"Generate {count} funny answer cards for Cards Against Humanity. Use the following examples as inspiration: " + ', '.join(selected_answers)
-
+@app.route("/get_choices", methods=["POST"])
+def get_choices():
     try:
-        response_text = call_groq_chat(prompt)
-        content = response_text.split("\n")
-        decoded_content = [decode_html_entities(card.strip()) for card in content if re.match(r'^\d+\.', card.strip())]
-        decoded_content = decoded_content[-count:] if len(decoded_content) > count else decoded_content
+        context = game_state["current_event"]
+        response = groq_client.chat.completions.create(
+            model="allam-2-7b",
+            messages=[
+                {"role": "system", "content": (
+                    "You are a fantasy RPG assistant. Based on the current scene, suggest 3 or 4 possible player actions. "
+                    "For each action, assign a stat (or 'none') and potential reward (like +1 LUCK). Format:\n"
+                    "1. Talk to the merchant | stat: charisma | reward: gold\n"
+                    "2. Sneak past the guard | stat: luck | reward: access"
+                )},
+                {"role": "user", "content": f"Scene: {context}"}
+            ]
+        )
+
+        if hasattr(response, 'choices') and len(response.choices) > 0:
+            text = response.choices[0].message.content.strip()
+            return jsonify({"choices": parse_detailed_choices(text)})
     except Exception as e:
-        print(f"Error fetching cards: {e}")
-        decoded_content = selected_answers
+        print(f"Error getting choices: {e}")
 
-    return decoded_content
+    return jsonify({"choices": []})
 
-def decode_html_entities(text):
-    return html.unescape(text)
+def generate_story_event():
+    try:
+        response = groq_client.chat.completions.create(
+            model="allam-2-7b",
+            messages=[
+                {"role": "system", "content": (
+                    "You are a fantasy RPG narrator. Begin an adventure in 'Twilight Clearing'. End with 'What do you do?'"
+                )}
+            ]
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Error generating story: {e}")
+        return "You awaken in a foggy glade. What do you do?"
 
+def call_groq_for_result(context):
+    try:
+        response = groq_client.chat.completions.create(
+            model="allam-2-7b",
+            messages=[
+                {"role": "system", "content": (
+                    "You are a fantasy RPG narrator. Continue the scene with the given stat challenge result. "
+                    "Be vivid and end with 'What do you do next?'. Include exact stat result info in the output."
+                )},
+                {"role": "user", "content": context}
+            ]
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Error generating outcome: {e}")
+        return "You hesitate. Nothing changes. What do you do next?"
+
+def detect_stat_from_action(action):
+    action = action.lower()
+    if any(w in action for w in ["fight", "charge", "resist"]): return "courage"
+    if any(w in action for w in ["think", "study", "solve"]): return "wisdom"
+    if any(w in action for w in ["charm", "talk", "convince"]): return "charisma"
+    if any(w in action for w in ["sneak", "chance", "luck"]): return "luck"
+    return random.choice(["courage", "wisdom", "charisma", "luck"])
+
+def parse_detailed_choices(text):
+    choices = []
+    for line in text.strip().split("\n"):
+        if '|' in line:
+            parts = line.split('|')
+            action = parts[0].strip().split('.', 1)[-1].strip()
+            stat = parts[1].split(':')[-1].strip() if 'stat:' in parts[1] else "none"
+            reward = parts[2].split(':')[-1].strip() if len(parts) > 2 else "none"
+            stat_value = game_state["stats"].get(stat, 0)
+            chance = int(stat_value * 10)
+            choices.append({
+                "action": action,
+                "stat": stat,
+                "reward": reward,
+                "chance": chance
+            })
+    return choices
 if __name__ == "__main__":
     app.run(debug=True)
