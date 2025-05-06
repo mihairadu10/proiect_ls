@@ -12,7 +12,28 @@ load_dotenv()
 
 app = Flask(__name__)
 
-groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+import requests
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+def call_groq_chat(prompt, model="llama-3-70b-8192"):
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    data = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a game master for Cards Against Humanity."},
+            {"role": "user", "content": prompt}
+        ]
+    }
+
+    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
+    
 
 # Funcție să încarce answers.csv
 def load_answers():
